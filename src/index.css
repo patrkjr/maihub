@@ -3,10 +3,20 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-body {
-  margin: 0;
-}
+@layer base {
+  html {
+    @apply min-h-full bg-slate-50 text-slate-900 transition-colors duration-300;
+  }
 
-#root {
-  min-height: 100vh;
+  html.dark {
+    @apply bg-slate-900 text-slate-100;
+  }
+
+  body {
+    @apply m-0 min-h-full bg-transparent;
+  }
+
+  #root {
+    @apply min-h-screen bg-transparent;
+  }
 }

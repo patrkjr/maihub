@@ -71,9 +71,7 @@ const App = () => {
   };
 
   return (
-    <div
-      className={`min-h-screen flex transition-colors duration-300 ${resolvedDark ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'}`}
-    >
+    <div className="flex min-h-screen bg-transparent">
       {!isLg && isSidebarOpen && (
         <button
           type="button"
