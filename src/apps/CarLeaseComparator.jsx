@@ -7,6 +7,9 @@ import {
   ShieldCheck,
   PlusCircle,
   X,
+  Percent,
+  CalendarClock,
+  ReceiptText,
 } from 'lucide-react';
 import {
   LineChart,
@@ -24,6 +27,7 @@ const defaultLeaseState = {
   cars: [
     {
       id: 1,
+      type: 'lease',
       name: 'Option 1',
       downpayment: 5000,
       monthlyLease: 350,
@@ -32,6 +36,7 @@ const defaultLeaseState = {
     },
     {
       id: 2,
+      type: 'lease',
       name: 'Option 2',
       downpayment: 2000,
       monthlyLease: 450,
@@ -41,9 +46,28 @@ const defaultLeaseState = {
   ],
 };
 
+const DEPRECIATION_OUTLOOKS = [
+  { id: 'pessimistic', label: 'Pessimistic', multiplier: 1.25 },
+  { id: 'neutral', label: 'Neutral', multiplier: 1 },
+  { id: 'optimistic', label: 'Optimistic', multiplier: 0.75 },
+];
+
 const CarLeaseComparator = ({ appId }) => {
   const [data, setData] = useAppStorage(appId, defaultLeaseState);
-  const { cars } = data;
+  const cars = useMemo(
+    () =>
+      (data.cars ?? []).map((car) => ({
+        type: 'lease',
+        carPrice: 30000,
+        runtimeMonths: 48,
+        interestRate: 4.5,
+        startingFee: 0,
+        depreciationOutlook: 'neutral',
+        ...car,
+      })),
+    [data.cars]
+  );
+  const ANNUAL_DEPRECIATION_RATE = 0.12;
 
   const [isDark, setIsDark] = useState(() =>
     document.documentElement.classList.contains('dark')
@@ -58,23 +82,53 @@ const CarLeaseComparator = ({ appId }) => {
     return () => mo.disconnect();
   }, []);
 
-  const addCar = () => {
+  const getNextColor = (index) => {
+    const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+    return colors[index % colors.length];
+  };
+
+  const addLeaseOption = () => {
     setData((prev) => {
       const list = prev.cars;
       const newId = list.length > 0 ? Math.max(...list.map((c) => c.id)) + 1 : 1;
-      const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
-      const nextColor = colors[list.length % colors.length];
       return {
         ...prev,
         cars: [
           ...list,
           {
             id: newId,
-            name: `Option ${newId}`,
+            type: 'lease',
+            name: `Lease Option ${newId}`,
             downpayment: 0,
             monthlyLease: 0,
             monthlyInsurance: 0,
-            color: nextColor,
+            color: getNextColor(list.length),
+          },
+        ],
+      };
+    });
+  };
+
+  const addFinancingOption = () => {
+    setData((prev) => {
+      const list = prev.cars;
+      const newId = list.length > 0 ? Math.max(...list.map((c) => c.id)) + 1 : 1;
+      return {
+        ...prev,
+        cars: [
+          ...list,
+          {
+            id: newId,
+            type: 'financing',
+            name: `Financing Option ${newId}`,
+            carPrice: 30000,
+            downpayment: 3000,
+            runtimeMonths: 48,
+            interestRate: 4.5,
+            startingFee: 0,
+            depreciationOutlook: 'neutral',
+            monthlyInsurance: 0,
+            color: getNextColor(list.length),
           },
         ],
       };
@@ -108,9 +162,75 @@ const CarLeaseComparator = ({ appId }) => {
     return new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 }).format(n);
   };
 
+  const calculateMonthlyPayment = (principal, runtimeMonths, interestRatePercent) => {
+    const months = Math.max(0, Number(runtimeMonths) || 0);
+    if (months === 0 || principal <= 0) return 0;
+
+    const monthlyRate = (Number(interestRatePercent) || 0) / 100 / 12;
+    if (monthlyRate === 0) return principal / months;
+
+    return (principal * monthlyRate) / (1 - (1 + monthlyRate) ** -months);
+  };
+
+  const calculateLoanBalance = (principal, runtimeMonths, interestRatePercent, paymentsMade) => {
+    const months = Math.max(0, Number(runtimeMonths) || 0);
+    const paidMonths = Math.min(Math.max(0, paymentsMade), months);
+    if (months === 0 || principal <= 0) return 0;
+
+    const monthlyRate = (Number(interestRatePercent) || 0) / 100 / 12;
+    const monthlyPayment = calculateMonthlyPayment(principal, months, interestRatePercent);
+
+    if (monthlyRate === 0) {
+      return Math.max(0, principal - monthlyPayment * paidMonths);
+    }
+
+    const balance =
+      principal * (1 + monthlyRate) ** paidMonths -
+      monthlyPayment * (((1 + monthlyRate) ** paidMonths - 1) / monthlyRate);
+    return Math.max(0, balance);
+  };
+
   const calculateCostAtYear = (car, year) => {
     const totalMonths = year * 12;
-    return car.downpayment + car.monthlyLease * totalMonths + car.monthlyInsurance * totalMonths;
+
+    if (car.type === 'financing') {
+      const carPrice = Math.max(0, Number(car.carPrice) || 0);
+      const downpayment = Math.max(0, Number(car.downpayment) || 0);
+      const runtimeMonths = Math.max(0, Number(car.runtimeMonths) || 0);
+      const interestRate = Math.max(0, Number(car.interestRate) || 0);
+      const startingFee = Math.max(0, Number(car.startingFee) || 0);
+      const monthlyInsurance = Math.max(0, Number(car.monthlyInsurance) || 0);
+      const depreciationOutlook = DEPRECIATION_OUTLOOKS.find(
+        (outlook) => outlook.id === car.depreciationOutlook
+      );
+      const adjustedDepreciationRate =
+        ANNUAL_DEPRECIATION_RATE * (depreciationOutlook?.multiplier ?? 1);
+
+      const principal = Math.max(0, carPrice - downpayment);
+      const paidMonths = Math.min(totalMonths, runtimeMonths);
+      const monthlyPayment = calculateMonthlyPayment(principal, runtimeMonths, interestRate);
+
+      const totalOutflow =
+        downpayment + startingFee + monthlyPayment * paidMonths + monthlyInsurance * totalMonths;
+
+      const remainingLoan = calculateLoanBalance(
+        principal,
+        runtimeMonths,
+        interestRate,
+        paidMonths
+      );
+      const estimatedCarValue = carPrice * (1 - adjustedDepreciationRate) ** year;
+      const equity = estimatedCarValue - remainingLoan;
+
+      // Net ownership cost (cash paid minus current equity) for fair comparison with leasing.
+      return Math.max(0, totalOutflow - equity);
+    }
+
+    return (
+      (Number(car.downpayment) || 0) +
+      (Number(car.monthlyLease) || 0) * totalMonths +
+      (Number(car.monthlyInsurance) || 0) * totalMonths
+    );
   };
 
   const chartTheme = useMemo(
@@ -143,23 +263,32 @@ const CarLeaseComparator = ({ appId }) => {
               Car Lease Comparator
             </h1>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Compare total ownership costs across multiple leasing options.
+              Compare total costs across leasing and financing options.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={addCar}
-            className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-semibold transition-all shadow-lg shadow-blue-200/50 dark:shadow-blue-950/50 active:scale-95"
-          >
-            <PlusCircle size={20} /> Add New Option
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={addLeaseOption}
+              className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-blue-200/50 dark:shadow-blue-950/50 active:scale-95"
+            >
+              <PlusCircle size={18} /> Lease Option
+            </button>
+            <button
+              type="button"
+              onClick={addFinancingOption}
+              className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-emerald-200/50 dark:shadow-emerald-950/50 active:scale-95"
+            >
+              <PlusCircle size={18} /> Financing Option
+            </button>
+          </div>
         </header>
 
         <div className="flex gap-6 overflow-x-auto overflow-y-visible pb-8 snap-x no-scrollbar-lease w-full min-w-0 max-w-full">
           {cars.map((car) => (
             <div
               key={car.id}
-              className="min-w-[320px] bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex-shrink-0 snap-start transition-all hover:shadow-md relative group"
+              className="min-w-[320px] bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 shrink-0 snap-start transition-all hover:shadow-md relative group"
             >
               <button
                 type="button"
@@ -181,66 +310,218 @@ const CarLeaseComparator = ({ appId }) => {
                 />
               </div>
 
+              <div className="mb-4 inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold bg-slate-100 text-slate-600 dark:bg-slate-700/50 dark:text-slate-300">
+                {car.type === 'financing' ? 'Financing' : 'Leasing'}
+              </div>
+
               <div className="space-y-5">
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                    Downpayment
-                  </label>
-                  <div className="relative">
-                    <CreditCard
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      size={18}
-                    />
-                    <input
-                      type="number"
-                      value={car.downpayment}
-                      onChange={(e) =>
-                        updateCar(car.id, 'downpayment', parseFloat(e.target.value) || 0)
-                      }
-                      className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
-                    />
-                  </div>
-                </div>
+                {car.type === 'financing' ? (
+                  <>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Car Price
+                      </label>
+                      <div className="relative">
+                        <Car
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.carPrice}
+                          onChange={(e) =>
+                            updateCar(car.id, 'carPrice', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                    Monthly Lease
-                  </label>
-                  <div className="relative">
-                    <TrendingUp
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      size={18}
-                    />
-                    <input
-                      type="number"
-                      value={car.monthlyLease}
-                      onChange={(e) =>
-                        updateCar(car.id, 'monthlyLease', parseFloat(e.target.value) || 0)
-                      }
-                      className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
-                    />
-                  </div>
-                </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Downpayment
+                      </label>
+                      <div className="relative">
+                        <CreditCard
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.downpayment}
+                          onChange={(e) =>
+                            updateCar(car.id, 'downpayment', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                    Monthly Insurance
-                  </label>
-                  <div className="relative">
-                    <ShieldCheck
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      size={18}
-                    />
-                    <input
-                      type="number"
-                      value={car.monthlyInsurance}
-                      onChange={(e) =>
-                        updateCar(car.id, 'monthlyInsurance', parseFloat(e.target.value) || 0)
-                      }
-                      className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
-                    />
-                  </div>
-                </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Running Time (Months)
+                      </label>
+                      <div className="relative">
+                        <CalendarClock
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.runtimeMonths}
+                          onChange={(e) =>
+                            updateCar(car.id, 'runtimeMonths', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Interest Rate (%)
+                      </label>
+                      <div className="relative">
+                        <Percent
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={car.interestRate}
+                          onChange={(e) =>
+                            updateCar(car.id, 'interestRate', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Starting Fee (One Time)
+                      </label>
+                      <div className="relative">
+                        <ReceiptText
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.startingFee}
+                          onChange={(e) =>
+                            updateCar(car.id, 'startingFee', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Depreciation Outlook
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {DEPRECIATION_OUTLOOKS.map((outlook) => (
+                          <button
+                            key={outlook.id}
+                            type="button"
+                            onClick={() => updateCar(car.id, 'depreciationOutlook', outlook.id)}
+                            className={`rounded-lg border px-2 py-2 text-xs font-semibold transition-colors ${
+                              car.depreciationOutlook === outlook.id
+                                ? 'border-blue-500 bg-blue-500 text-white'
+                                : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300 dark:hover:border-blue-500'
+                            }`}
+                          >
+                            {outlook.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Monthly Insurance
+                      </label>
+                      <div className="relative">
+                        <ShieldCheck
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.monthlyInsurance}
+                          onChange={(e) =>
+                            updateCar(car.id, 'monthlyInsurance', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Downpayment
+                      </label>
+                      <div className="relative">
+                        <CreditCard
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.downpayment}
+                          onChange={(e) =>
+                            updateCar(car.id, 'downpayment', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Monthly Lease
+                      </label>
+                      <div className="relative">
+                        <TrendingUp
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.monthlyLease}
+                          onChange={(e) =>
+                            updateCar(car.id, 'monthlyLease', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Monthly Insurance
+                      </label>
+                      <div className="relative">
+                        <ShieldCheck
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                          size={18}
+                        />
+                        <input
+                          type="number"
+                          value={car.monthlyInsurance}
+                          onChange={(e) =>
+                            updateCar(car.id, 'monthlyInsurance', parseFloat(e.target.value) || 0)
+                          }
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-slate-900 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-700">
@@ -258,11 +539,19 @@ const CarLeaseComparator = ({ appId }) => {
 
           <button
             type="button"
-            onClick={addCar}
+            onClick={addLeaseOption}
             className="min-w-[320px] bg-slate-100 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-600 flex flex-col items-center justify-center text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 hover:border-blue-300 dark:hover:border-blue-500 transition-all group"
           >
             <Plus className="mb-2 group-hover:scale-125 transition-transform" size={48} />
-            <span className="font-semibold text-lg">Add another option</span>
+            <span className="font-semibold text-lg">Add lease option</span>
+          </button>
+          <button
+            type="button"
+            onClick={addFinancingOption}
+            className="min-w-[320px] bg-slate-100 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-600 flex flex-col items-center justify-center text-slate-400 hover:text-emerald-500 dark:hover:text-emerald-400 hover:border-emerald-300 dark:hover:border-emerald-500 transition-all group"
+          >
+            <Plus className="mb-2 group-hover:scale-125 transition-transform" size={48} />
+            <span className="font-semibold text-lg">Add financing option</span>
           </button>
         </div>
 
@@ -327,8 +616,8 @@ const CarLeaseComparator = ({ appId }) => {
 
         <footer className="mt-12 text-center text-slate-400 text-sm">
           <p>
-            Values calculated based on cumulative totals including initial downpayment and recurring
-            monthly fees.
+            Leasing uses cumulative payments. Financing uses net ownership cost (cash paid minus
+            estimated equity) with {Math.round(ANNUAL_DEPRECIATION_RATE * 100)}% annual depreciation.
           </p>
         </footer>
 
